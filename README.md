@@ -55,6 +55,15 @@ CLI-рантаймах может отличаться, см. их докуме�
 git clone https://github.com/serjdrej/gost-ed-mashiny.git ~/.claude/skills/gost-ed-mashiny
 ```
 
+### Внешняя зависимость
+
+Последний шаг (выпуск готового комплекта в DOCX) использует skill
+`anthropic-skills:docx` — он не входит в этот репозиторий и не входит в
+маркетплейс `ru-legal-skills`, устанавливается отдельно, из своего
+источника. Без него все шаги до выпуска работают как обычно; сам комплект
+можно собрать и сохранить как Markdown, просто без автоматической сборки в
+DOCX.
+
 ## Как это устроено
 
 Точка входа — [`SKILL.md`](SKILL.md): последовательность из шести шагов
@@ -73,8 +82,8 @@ scripts/      — gost_lookup.py: статус ГОСТ по открытому 
 **Статус:** самостоятельный репозиторий, входит в маркетплейс
 [`ru-legal-skills`](https://github.com/serjdrej/ru-legal-skills) вместе с
 [`legal-ru`](https://github.com/serjdrej/legal-ru) и
-[`patent-ru`](https://github.com/serjdrej/patent-ru); в библиотеку скиллов
-lazy-skill-library пока не переимпортирован после этих изменений.
+[`patent-ru`](https://github.com/serjdrej/patent-ru). В другие каталоги
+скиллов пока не импортирован.
 
 ## Лицензия
 
