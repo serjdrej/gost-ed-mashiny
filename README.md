@@ -42,11 +42,22 @@
 
 ## Как установить
 
-**Через маркетплейс** (проще всего):
+**Claude Code, через маркетплейс** (проще всего):
 ```
 /plugin marketplace add serjdrej/ru-legal-skills
 /plugin install gost-ed-mashiny@ru-legal-skills
 ```
+
+**Codex CLI, через тот же маркетплейс:**
+```
+codex plugin marketplace add serjdrej/ru-legal-skills
+codex plugin add gost-ed-mashiny@ru-legal-skills
+```
+
+Обе команды читают один и тот же `.claude-plugin/marketplace.json` в
+`ru-legal-skills` — отдельного манифеста для Codex не нужно; источник этого
+плагина там закреплён формой `"url"` (не специфичной для Claude Code формой
+`"github"`), проверенной вживую на обоих рантаймах.
 
 **Отдельно, без маркетплейса** — склонировать репозиторий в директорию
 скиллов Claude Code (`~/.claude/skills/gost-ed-mashiny` — на других
