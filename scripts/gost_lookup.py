@@ -1,20 +1,39 @@
 """Lookup current catalogue status for GOST standards used by this skill.
 
-The ``status`` command normalizes whitespace in the designation.  A
-designation containing the standalone letter ``Р`` (for example,
+The ``status`` command normalizes whitespace in the designation. A
+designation containing a standalone letter ``Р`` (Cyrillic) or ``P`` (Latin
+look-alike, in case someone typed or pasted the wrong one — for example,
 ``ГОСТ Р 2.610-2019``) uses the national-standards catalogue; every other
 designation uses the interstate-standards catalogue.
 
+The catalogue matches on the **exact** ``Обозначение`` string, including the
+year suffix (``ГОСТ 12.1.003-2014``, not ``ГОСТ 12.1.003``) — every row in
+both catalogues carries a year, and a query without one will not match even
+when the standard is current. A miss triggers a prefix search over the same
+catalogue and, if any designation starts with the query, lists them as a
+hint rather than leaving the user to guess that the year was the problem.
+
 Each catalogue's open-data page (``CATALOGS[*]["page"]``) is fetched first to
 discover the CSV filename Rosstandart currently publishes -- filenames are
-dated (``data-YYYYMMDD-structure-YYYYMMDD.csv``) and change when Rosstandart
-republishes. If discovery fails for any reason (network error, page moved,
-pattern not found), this falls back to the last-known filename pinned in
-``CATALOGS[*]["fallback_data"]`` -- itself downloaded and validated the same
-way, never assumed fresh. Every ``status`` result reports which file was
-actually read and its snapshot date, extracted from the filename, so a
-"not found" or a stale "Действует" can be told apart from a genuinely current
-answer instead of being silently indistinguishable from one.
+dated (``data-YYYYMMDD-structure-YYYYMMDD.csv``), the page can list more than
+one (an archive of older snapshots), and the discovered URL is always the one
+with the latest date, not merely the first match on the page. If discovery
+fails for any reason (network error, page moved, pattern not found), this
+falls back to the last-known filename pinned in ``CATALOGS[*]["fallback_data"]``
+-- itself downloaded and validated the same way, never assumed fresh. Every
+``status`` result -- found, not found, or a download error -- reports which
+file was actually read, its snapshot date, and whether that came from live
+discovery or the pinned fallback, so a "not found" or a stale "Действует" can
+be told apart from a genuinely current answer instead of being silently
+indistinguishable from one.
+
+The ``Статус`` column itself is not what a legal/regulatory reader tends to
+assume: neither catalogue carries "отменён" or "заменён" as a value. The
+values actually present (measured 2026-09-20 against both live snapshots) are
+"Действует", "Принят", and, interstate-only, "Действует только в РФ". A
+withdrawn or superseded standard does not appear with a cancellation marker
+-- it is simply absent from the snapshot, which is why every not-found result
+carries the same caveat a missing standard would.
 """
 
 from __future__ import annotations
@@ -40,7 +59,7 @@ CATALOGS = {
         "name": "Каталог национальных стандартов (библиография)",
         "page": "https://www.rst.gov.ru/opendata/7706406291-nationalstandards",
         # Last-known filename, used only if live discovery (see
-        # discover_data_url) fails. Confirmed current as of 2026-09-10;
+        # discover_data_url) fails. Confirmed current as of 2026-09-20;
         # do not treat this date as current without checking discovery's
         # own provenance line in the command's output.
         "fallback_data": (
@@ -69,14 +88,21 @@ def normalize_designation(value: str) -> str:
 
 
 def choose_catalog(designation: str) -> dict[str, str]:
-    """Choose the national catalogue only for a standalone Cyrillic Р token."""
-    if re.search(r"(?:^|\s)Р(?:\s|$)", designation.upper()):
+    """Choose the national catalogue for a standalone Р (Cyrillic) or P (Latin) token.
+
+    Accepting the Latin look-alike is deliberate: it is visually
+    indistinguishable from the Cyrillic letter, easy to type or paste by
+    mistake, and matching only the Cyrillic form would silently route such a
+    query to the wrong catalogue and return a false "not found" instead of
+    the standard it was actually asking about.
+    """
+    if re.search(r"(?:^|\s)[РP](?:\s|$)", designation.upper()):
         return CATALOGS["national"]
     return CATALOGS["interstate"]
 
 
 def discover_data_url(catalog: dict[str, str]) -> tuple[str, str]:
-    """Find the CSV file the catalogue's open-data page currently publishes.
+    """Find the newest CSV file the catalogue's open-data page currently publishes.
 
     Returns (url, provenance). provenance always says plainly whether the
     URL was discovered live or is the pinned fallback, and why -- this text
@@ -84,6 +110,11 @@ def discover_data_url(catalog: dict[str, str]) -> tuple[str, str]:
     failure here just means falling back to the pinned URL, which
     download_rows still downloads and validates on its own before anything
     is trusted.
+
+    The page can list more than one data-*.csv filename (an archive of older
+    snapshots alongside the current one) -- every match is considered and the
+    one with the latest embedded date wins, not merely the first one that
+    appears in the page's HTML.
     """
     request = urllib.request.Request(
         catalog["page"], headers={"User-Agent": "gost-ed-mashiny-gost-lookup/1.0"}
@@ -110,14 +141,15 @@ def discover_data_url(catalog: dict[str, str]) -> tuple[str, str]:
             "обнаружить свежий снимок не удалось (кодировка страницы не распознана) — используется последний известный файл",
         )
 
-    match = DATA_FILENAME_RE.search(page_text)
-    if not match:
+    matches = list(DATA_FILENAME_RE.finditer(page_text))
+    if not matches:
         return (
             catalog["fallback_data"],
             "обнаружить свежий снимок не удалось (имя файла data-*.csv не найдено на странице) — используется последний известный файл",
         )
 
-    discovered_url = f"{catalog['page'].rstrip('/')}/{match.group(0)}"
+    best = max(matches, key=lambda m: m.group(1))
+    discovered_url = f"{catalog['page'].rstrip('/')}/{best.group(0)}"
     return discovered_url, "снимок обнаружен живым запросом к странице открытых данных"
 
 
@@ -178,6 +210,16 @@ def download_rows(catalog: dict[str, str], data_url: str) -> list[dict[str, str]
     return rows
 
 
+def find_prefix_hints(rows: list[dict[str, str]], designation: str) -> list[dict[str, str]]:
+    """Rows whose Обозначение starts with the query -- the year-suffix case."""
+    return [
+        row
+        for row in rows
+        if normalize_designation(row["Обозначение"]).startswith(designation)
+        and normalize_designation(row["Обозначение"]) != designation
+    ]
+
+
 def command_status(designation: str) -> int:
     designation = normalize_designation(designation)
     catalog = choose_catalog(designation)
@@ -188,6 +230,10 @@ def command_status(designation: str) -> int:
         rows = download_rows(catalog, data_url)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        print(
+            f"Источник снимка: {provenance} (дата {snapshot_date}).",
+            file=sys.stderr,
+        )
         return 2
 
     result = next(
@@ -204,9 +250,27 @@ def command_status(designation: str) -> int:
             f"Проверено по снимку от {snapshot_date} ({provenance}): {data_url}. "
             "«Не найдено» означает «нет в этом снимке» — стандарт мог появиться "
             "или, наоборот, быть отменён позже даты снимка; не считать это "
-            "равнозначным «такого стандарта не существует».",
+            "равнозначным «такого стандарта не существует». Отменённый или "
+            "заменённый стандарт тоже вернётся как «не найдено»: в этом "
+            "каталоге нет отдельной пометки «отменён»/«заменён» — только "
+            "«Действует», «Принят» и, в межгосударственном каталоге, "
+            "«Действует только в РФ».",
             file=sys.stderr,
         )
+        hints = find_prefix_hints(rows, designation)
+        if hints:
+            print(
+                "В каталоге есть обозначения, начинающиеся так же — вероятно, "
+                "не указан год выпуска:",
+                file=sys.stderr,
+            )
+            for hint in hints[:10]:
+                print(
+                    f"  {hint['Обозначение']} — {hint['Статус']}",
+                    file=sys.stderr,
+                )
+            if len(hints) > 10:
+                print(f"  … и ещё {len(hints) - 10}.", file=sys.stderr)
         return 1
 
     print(f"Каталог: {catalog['name']}")
@@ -216,6 +280,10 @@ def command_status(designation: str) -> int:
     print(f"Код ОКС: {result['Код ОКС']}")
     print(f"Снимок каталога от: {snapshot_date} ({provenance})")
     print(f"Проверить самостоятельно: {data_url}")
+    print(
+        "Статус актуален только на дату снимка выше — если с тех пор прошло "
+        "заметное время, перепроверьте перед тем, как полагаться на него."
+    )
     return 0
 
 
@@ -229,11 +297,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Проверяет статус ГОСТ в открытых каталогах Росстандарта или выводит "
-            "маршрут к ТР ТС 010/2011. Для status пробелы нормализуются; "
-            "обозначение с отдельной буквой «Р» выбирает национальный каталог, "
-            "остальные — межгосударственный. Перед чтением скрипт пытается "
-            "обнаружить свежий снимок каталога живым запросом; при неудаче "
-            "падает на последний известный файл — и то, и другое видно в выводе."
+            "маршрут к ТР ТС 010/2011. Обозначение должно включать год выпуска "
+            "(«ГОСТ 12.1.003-2014», не «ГОСТ 12.1.003») — без года команда не "
+            "найдёт действующий стандарт, хотя подскажет похожие обозначения. "
+            "Пробелы нормализуются; обозначение с отдельной буквой «Р» (или "
+            "похожей латинской «P») выбирает национальный каталог, остальные — "
+            "межгосударственный. Перед чтением скрипт пытается обнаружить "
+            "самый свежий снимок каталога живым запросом; при неудаче падает "
+            "на последний известный файл — источник виден в каждом ответе."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
